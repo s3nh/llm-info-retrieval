@@ -1,19 +1,38 @@
 import os 
 import numpy as np
+import threading
 import torch
+import torch.nn.functional as F
 from cfg import RetrieverCFG
 from threading import Thread
 from torch import Tensor
 from transformers import AutoModel 
 from transformers import AutoTokenizer
 
+#Retriever load
+#2.57 s ± 266 ms per loop (mean ± std. dev. of 7 runs, 3 loops each)
+#4.17 s ± 883 ms per loop (mean ± std. dev. of 7 runs, 3 loops each)
+#Tokenizer load
+#19.8 ms ± 4.61 ms per loop (mean ± std. dev. of 7 runs, 3 loops each)
+#20.6 ms ± 1.47 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
+#22.2 ms ± 2.15 ms per loop (mean ± std. dev. of 7 runs, 50 loops each)
+
+#Retriever inference 
+# Inference tests
+# Gte-large 
+# 1.2 s ± 149 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
+# 840 ms ± 55.9 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+
+
 class Retriever:
     def __init__(self):
         dir(Retriever)
         self.tokenizer = self.load_tokenizer()
-        self.retiever = self.load_retriever()
+        self.retriever = self.load_retriever()
         self._question = None
         self._input_text = None
+        self.parallel: bool = True
 
     @property
     def input_text(self):
@@ -31,7 +50,7 @@ class Retriever:
     def input_text(self):
         self._input_text = None
 
-    def average_pool(last_hidden_states: Tensor,
+    def average_pool(self, last_hidden_states: Tensor,
                     attention_mask: Tensor) -> Tensor:
         last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
         return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
@@ -54,14 +73,19 @@ class Retriever:
     def check_embed(self, embed1, embed2):
         return torch.all(embed1 == embed2)
 
-    def proces_thread(self, question: str):
-        if self.parallell:
+    def process_thread(self):
+        if self.parallel:
             process = threading.Thread(target = self.process_once, name = 'process_once')
             process.daemon = True
             process.start()
 
     def process_once(self):
-        batch_dict = self.tokenizer(input_text, max_length = RetrieverCFG.max_length, 
+        """
+        Process self.input_text in few steps, based on arguments 
+        stored in RetrieverCFG.
+        Few steps happened here. 
+        """
+        batch_dict = self.tokenizer(self.input_text, max_length = RetrieverCFG.max_length, 
             padding = RetrieverCFG.padding, 
             truncation = RetrieverCFG.truncation, 
             return_tensors = RetrieverCFG.return_tensors)
@@ -74,5 +98,25 @@ class Retriever:
         embeddings = self.embedd_normalize(embeddings)
         return embeddings
 
+    def batch_chunk(input_base: List) -> torch.Tensor:
+        """
+        Return sliced input based, base on chunk_size 
+        provided in RetrieverCFG.chunk_size argument 
+        
+        Args:
+            input_base: List    
+                Consist knowledge base, stored in dictionary. 
+                This is a chunked one.
+            We just want to extending to chunk_size, to calculate more embeddings at once.
+        Returns:
+            List[List]
+                List of lists which consist of nested lists of lists.
+        """
+        emb_len = len(input_base)
+        chunk_size = RetrieverCFG.chunk_size
+        n_ixes = int(emb_len/RetrieverCFG.chunk_size)
+        return [input_base[(ix*chunk_size):(ix+1)*chunk_size] if ix != n_ixes else input[ix:] for x in range(n_ixes)] 
+
     def batch_processing(self):
-        ...
+        if not torch.cuda.is_available():
+             
