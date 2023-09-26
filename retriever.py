@@ -3,12 +3,13 @@ import numpy as np
 import threading
 import torch
 import torch.nn.functional as F
+from typing import List, Dict, Union
+from typing import Any, TypeVar
 from cfg import RetrieverCFG
 from threading import Thread
 from torch import Tensor
 from transformers import AutoModel 
 from transformers import AutoTokenizer
-
 #Retriever load
 #2.57 s ± 266 ms per loop (mean ± std. dev. of 7 runs, 3 loops each)
 #4.17 s ± 883 ms per loop (mean ± std. dev. of 7 runs, 3 loops each)
@@ -23,16 +24,14 @@ from transformers import AutoTokenizer
 # 1.2 s ± 149 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
 # 840 ms ± 55.9 ms per loop (mean ± std. dev. of 7 runs, 10 loops each)
 
-
-
 class Retriever:
     def __init__(self):
-        dir(Retriever)
-        self.tokenizer = self.load_tokenizer()
-        self.retriever = self.load_retriever()
         self._question = None
         self._input_text = None
         self.parallel: bool = True
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.tokenizer = self.load_tokenizer()
+        self.retriever = self.load_retriever()
 
     @property
     def input_text(self):
@@ -65,7 +64,7 @@ class Retriever:
         return AutoModel.from_pretrained(
             pretrained_model_name_or_path = RetrieverCFG.model_name,
             local_files_only = True
-        )
+        ).to(self.device).eval()
 
     def embedd_normalize(self, embeddings: torch.Tensor):
         return F.normalize(embeddings)
@@ -88,17 +87,18 @@ class Retriever:
         batch_dict = self.tokenizer(self.input_text, max_length = RetrieverCFG.max_length, 
             padding = RetrieverCFG.padding, 
             truncation = RetrieverCFG.truncation, 
-            return_tensors = RetrieverCFG.return_tensors)
+            return_tensors = RetrieverCFG.return_tensors).to(self.device)
 
-        outputs = self.retriever(**batch_dict)
+        with torch.no_grad():
+            outputs = self.retriever(**batch_dict)
         embeddings = self.average_pool(
-            last_hidden_states = outputs.last_hidden_state,
-            attention_mask = batch_dict['attention_mask']
+            last_hidden_states = outputs.last_hidden_state.to(self.device),
+            attention_mask = batch_dict['attention_mask'].to(self.device)
         )
         embeddings = self.embedd_normalize(embeddings)
         return embeddings
 
-    def batch_chunk(input_base: List) -> torch.Tensor:
+    def batch_chunk(self, input_base: List) -> torch.Tensor:
         """
         Return sliced input based, base on chunk_size 
         provided in RetrieverCFG.chunk_size argument 
@@ -115,8 +115,10 @@ class Retriever:
         emb_len = len(input_base)
         chunk_size = RetrieverCFG.chunk_size
         n_ixes = int(emb_len/RetrieverCFG.chunk_size)
-        return [input_base[(ix*chunk_size):(ix+1)*chunk_size] if ix != n_ixes else input[ix:] for x in range(n_ixes)] 
+        return [input_base[(ix*chunk_size):(ix+1)*chunk_size] if ix != (n_ixes+1) else input[ix:] for ix in range(n_ixes+1)] 
 
-    def batch_processing(self):
-        if not torch.cuda.is_available():
-             
+    def batch_processing(self, base: List[List], chunk: bool = False) -> torch.Tensor:
+        # Store embeddings in cpu
+        if not chunk:
+            #Assume that 
+
