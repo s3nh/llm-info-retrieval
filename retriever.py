@@ -1,3 +1,4 @@
+import ctranslate2
 import os 
 import numpy as np
 import threading
@@ -32,6 +33,7 @@ class Retriever:
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         self.tokenizer = self.load_tokenizer()
         self.retriever = self.load_retriever()
+        torch.set_default_dtype(torch.half)
 
     @property
     def input_text(self):
@@ -61,10 +63,17 @@ class Retriever:
             )
 
     def load_retriever(self):
-        return AutoModel.from_pretrained(
-            pretrained_model_name_or_path = RetrieverCFG.model_name,
-            local_files_only = True
-        ).to(self.device).eval()
+        retriever = AutoModel.from_pretrained(
+                pretrained_model_name_or_path = RetrieverCFG.model_name,
+                local_files_only = True
+            )
+        if self.device == torch.device('cuda') and RetrieverCFG.model_half:
+            return  retriever.to(self.device).half().eval()
+        else:
+            return retriever.to(self.device).eval()
+
+    def load_translator(self):
+        ...
 
     def embedd_normalize(self, embeddings: torch.Tensor):
         return F.normalize(embeddings)
@@ -77,6 +86,9 @@ class Retriever:
             process = threading.Thread(target = self.process_once, name = 'process_once')
             process.daemon = True
             process.start()
+
+    def process_translator(self):
+        ...        
 
     def process_once(self):
         """
@@ -95,7 +107,7 @@ class Retriever:
             last_hidden_states = outputs.last_hidden_state.to(self.device),
             attention_mask = batch_dict['attention_mask'].to(self.device)
         )
-        embeddings = self.embedd_normalize(embeddings)
+        #embeddings = self.embedd_normalize(embeddings)
         return embeddings
 
     def batch_chunk(self, input_base: List) -> torch.Tensor:
@@ -118,7 +130,17 @@ class Retriever:
         return [input_base[(ix*chunk_size):(ix+1)*chunk_size] if ix != (n_ixes+1) else input[ix:] for ix in range(n_ixes+1)] 
 
     def batch_processing(self, base: List[List], chunk: bool = False) -> torch.Tensor:
-        # Store embeddings in cpu
+        """
+        Batch processing based on previously chunk data. 
+        If chunk = True, chunk data using self.batch_chunk 
+        using args stored in Retriever.CFG
+        """
+        output = torch.Tensor()
         if not chunk:
-            #Assume that 
-
+            for chunk in base:
+                chunk = [re.sub(r'[^\w\s]', '', str(el) + RetrieverCFG.pad_token * (RetrieverCFG.max_length - len(str(el).split()))) for el in chunk]
+                self.input_text = chunk
+                embeddings = self.process_once().cpu()
+                torch.cuda.empty_cache()
+                output = torch.cat((output, embeddings))
+        return output
