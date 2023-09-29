@@ -1,9 +1,11 @@
 import ctranslate2
 import os 
 import numpy as np
+import re
 import threading
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from typing import List, Dict, Union
 from typing import Any, TypeVar
 from cfg import RetrieverCFG
@@ -33,15 +35,14 @@ class Retriever:
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         self.tokenizer = self.load_tokenizer()
         self.retriever = self.load_retriever()
-        torch.set_default_dtype(torch.half)
-
+        self.starter: str= 'Represent this sentence for searching relevant passages :'
     @property
     def input_text(self):
         return self._input_text
     
     @input_text.setter
     def input_text(self, value):
-        self._input_text =value
+        self._input_text = value
 
     @input_text.getter
     def input_text(self):
@@ -67,7 +68,8 @@ class Retriever:
                 pretrained_model_name_or_path = RetrieverCFG.model_name,
                 local_files_only = True
             )
-        if self.device == torch.device('cuda') and RetrieverCFG.model_half:
+        if RetrieverCFG.model_half:
+            torch.set_default_dtype(torch.half)
             return  retriever.to(self.device).half().eval()
         else:
             return retriever.to(self.device).eval()
@@ -96,18 +98,21 @@ class Retriever:
         stored in RetrieverCFG.
         Few steps happened here. 
         """
-        batch_dict = self.tokenizer(self.input_text, max_length = RetrieverCFG.max_length, 
+        batch_dict = self.tokenizer(self.input_text, #max_length = RetrieverCFG.max_length, 
             padding = RetrieverCFG.padding, 
             truncation = RetrieverCFG.truncation, 
             return_tensors = RetrieverCFG.return_tensors).to(self.device)
 
         with torch.no_grad():
             outputs = self.retriever(**batch_dict)
-        embeddings = self.average_pool(
-            last_hidden_states = outputs.last_hidden_state.to(self.device),
-            attention_mask = batch_dict['attention_mask'].to(self.device)
-        )
-        #embeddings = self.embedd_normalize(embeddings)
+            if 'xge' in RetrieverCFG.model_name:
+                embeddings = outputs[0][:, 0]
+                embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+            else:
+                embeddings = self.average_pool(
+                    last_hidden_states = outputs.last_hidden_state.to(self.device),
+                    attention_mask = batch_dict['attention_mask'].to(self.device)
+                )
         return embeddings
 
     def batch_chunk(self, input_base: List) -> torch.Tensor:
@@ -137,8 +142,8 @@ class Retriever:
         """
         output = torch.Tensor()
         if not chunk:
-            for chunk in base:
-                chunk = [re.sub(r'[^\w\s]', '', str(el) + RetrieverCFG.pad_token * (RetrieverCFG.max_length - len(str(el).split()))) for el in chunk]
+            for chunk in tqdm(base):
+                chunk = [self.starter + re.sub(r'[^\w\s]', '', str(el)) for el in chunk]
                 self.input_text = chunk
                 embeddings = self.process_once().cpu()
                 torch.cuda.empty_cache()
