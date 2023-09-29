@@ -24,7 +24,8 @@ class Translator:
     
     @input_text.setter
     def input_text(self, value):
-        self._input_text =value
+        value = [re.sub(r"\.{2,}",".",val) for val in value]
+        self._input_text =['. '.join(map(lambda s: s.strip().capitalize(), val.split('.')))  for val in value] if isinstance(value, list) else value.capitalize()
 
     @input_text.getter
     def input_text(self):
@@ -69,7 +70,7 @@ class Translator:
         return self.tokenizer(input_text, 
             padding = TranslatorCFG.padding, 
             truncation = TranslatorCFG.truncation, 
-            max_length = TranslatorCFG.max_length, 
+            #max_length = TranslatorCFG.max_length, 
             return_tensors = TranslatorCFG.return_tensors ) 
 
     def translate(self, tokenized: torch.Tensor) -> Union[torch.Tensor, List]:
@@ -88,6 +89,7 @@ class Translator:
     def process_batch(self, input_base: List[List]) -> List:
         output: List = []
         for chunk in tqdm(input_base):
+            chunk = [re.sub(r'[^a-źA-Ź0-9.,\s]', '', str(el)) for el in chunk]
             self.input_text = chunk
             translated = self.process_once()
             output.append(translated)
